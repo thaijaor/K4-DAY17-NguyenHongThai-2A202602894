@@ -5,7 +5,13 @@ from typing import Any
 
 from agent_baseline import _message_text, live_retry_middleware
 from config import LabConfig, load_config
-from memory_store import FACT_LABELS, CompactMemoryManager, UserProfileStore, estimate_tokens, extract_profile_updates
+from memory_store import (
+    CompactMemoryManager,
+    UserProfileStore,
+    estimate_tokens,
+    extract_profile_updates,
+    validate_fact_write,
+)
 from model_provider import build_chat_model
 from offline_responder import compose_reply
 
@@ -25,6 +31,7 @@ ADVANCED_SYSTEM_PROMPT = (
 class AgentContext:
     user_id: str
     memory_path: str
+    thread_id: str = ""
 
 
 class AdvancedAgent:
@@ -100,7 +107,9 @@ class AdvancedAgent:
 
     def _reply_live(self, user_id: str, thread_id: str, message: str) -> dict[str, Any]:
         saved, overhead = self._remember(user_id, thread_id, message)
-        context = AgentContext(user_id=user_id, memory_path=str(self.profile_store.path_for(user_id)))
+        context = AgentContext(
+            user_id=user_id, memory_path=str(self.profile_store.path_for(user_id)), thread_id=thread_id
+        )
         result = self.langchain_agent.invoke(
             {"messages": [{"role": "user", "content": message}]},
             config={"configurable": {"thread_id": thread_id}},
@@ -133,6 +142,8 @@ class AdvancedAgent:
         from langgraph.checkpoint.memory import InMemorySaver
 
         store = self.profile_store
+        compact_memory = self.compact_memory
+        min_confidence = self.config.profile_confidence_threshold
         model = build_chat_model(self.config.model)
 
         @tool
@@ -144,10 +155,14 @@ class AdvancedAgent:
         def save_user_fact(key: str, value: str, runtime: ToolRuntime[AgentContext]) -> str:
             """Lưu hoặc ghi đè một fact ổn định vào User.md. key thuộc: name, location, profession,
             response_style, favorite_drink, favorite_food, pet, interests."""
-            if key not in FACT_LABELS:
-                return f"Từ chối: key '{key}' không nằm trong schema."
-            changed = store.upsert_fact(runtime.context.user_id, key, value.strip())
-            return "Đã cập nhật." if changed else "Không đổi."
+            # Guardrail: the value must be grounded in what the user said in this thread.
+            messages = compact_memory.context(runtime.context.thread_id)["messages"]
+            user_messages = [m["content"] for m in messages if m["role"] == "user"]
+            checked, reason = validate_fact_write(key, value, user_messages, min_confidence)
+            if checked is None:
+                return f"Từ chối: {reason}."
+            changed = store.upsert_fact(runtime.context.user_id, key, checked)
+            return ("Đã cập nhật." if changed else "Không đổi.") + ("" if reason == "ok" else f" ({reason})")
 
         @dynamic_prompt
         def inject_profile(request: ModelRequest) -> str:

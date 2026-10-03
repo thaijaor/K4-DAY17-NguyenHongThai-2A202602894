@@ -91,7 +91,8 @@ def run_agent_benchmark(agent_name: str, agent, conversations: list[dict[str, An
     quality_scores: list[float] = []
 
     for conv in conversations:
-        print(f"  [{agent_name}] {conv['id']}", file=sys.stderr, flush=True)
+        if agent.mode == "live":  # live runs take ~1h on free tier, show progress
+            print(f"  [{agent_name}] {conv['id']}", file=sys.stderr, flush=True)
         thread_id = conv["id"]
         threads.append(thread_id)
         for turn in conv["turns"]:
@@ -180,6 +181,7 @@ def run_suite(title: str, dataset: Path, config, live: bool) -> list[BenchmarkRo
 def main() -> None:
     parser = argparse.ArgumentParser(description="Day 17 memory benchmark: Baseline vs Advanced")
     parser.add_argument("--live", action="store_true", help="use the configured LLM provider instead of offline mode")
+    parser.add_argument("--suite", choices=["all", "standard", "stress"], default="all")
     args = parser.parse_args()
 
     config = load_config(Path(__file__).resolve().parent.parent)
@@ -187,8 +189,10 @@ def main() -> None:
     print(f"# Memory benchmark - mode: {mode}")
     print(f"Compact threshold: {config.compact_threshold_tokens} tokens, keep {config.compact_keep_messages} messages")
 
-    run_suite("Standard Benchmark", config.data_dir / "conversations.json", config, args.live)
-    run_suite("Long-Context Stress Benchmark", config.data_dir / "advanced_long_context.json", config, args.live)
+    if args.suite in ("all", "standard"):
+        run_suite("Standard Benchmark", config.data_dir / "conversations.json", config, args.live)
+    if args.suite in ("all", "stress"):
+        run_suite("Long-Context Stress Benchmark", config.data_dir / "advanced_long_context.json", config, args.live)
 
 
 if __name__ == "__main__":

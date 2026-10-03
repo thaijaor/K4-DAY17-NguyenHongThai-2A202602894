@@ -8,7 +8,7 @@ from agent_advanced import AdvancedAgent
 from agent_baseline import BaselineAgent
 from benchmark import recall_points
 from config import load_config
-from memory_store import CompactMemoryManager, UserProfileStore, extract_profile_updates
+from memory_store import CompactMemoryManager, UserProfileStore, extract_profile_updates, validate_fact_write
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -137,3 +137,27 @@ def test_short_thread_advanced_costs_more(tmp_path: Path) -> None:
         advanced.reply("u", "short", turn)
     assert advanced.compaction_count("short") == 0
     assert advanced.prompt_token_usage("short") > baseline.prompt_token_usage("short")
+
+
+def test_llm_tool_writes_must_be_grounded() -> None:
+    """Values Gemini wrote via `save_user_fact` in the live run must now be rejected."""
+
+    stress = json.loads((ROOT / "data" / "advanced_long_context.json").read_text(encoding="utf-8"))[0]["turns"]
+    said = stress[:10]
+
+    # News topic / model paraphrase -> not something the user said about themselves.
+    value, _ = validate_fact_write("interests", "Python, Energy policy, so sánh CAPEX mở rộng", said)
+    assert value == "Python"
+    assert validate_fact_write("interests", "Energy policy", said)[0] is None
+    # Noise: Hà Nội is a meeting trip, product manager is a joke.
+    assert validate_fact_write("location", "Hà Nội", said)[0] is None
+    assert validate_fact_write("profession", "product manager", said)[0] is None
+    # Grounded current facts pass.
+    assert validate_fact_write("location", "Đà Nẵng", said)[0] == "Đà Nẵng"
+    assert validate_fact_write("profession", "MLOps engineer", said)[0] == "MLOps engineer"
+    assert validate_fact_write("response_style", "ngắn gọn, 3 bullet", said)[0] == "ngắn gọn, 3 bullet"
+    # Annotated values and keys outside the schema.
+    pet_turns = ["Mình nuôi một bé corgi tên Bơ."]
+    assert validate_fact_write("pet", "corgi tên Bơ (thường dùng làm ví dụ test case)", pet_turns)[0] is None
+    assert validate_fact_write("pet", "corgi tên Bơ", pet_turns)[0] == "corgi tên Bơ"
+    assert validate_fact_write("salary", "1000", pet_turns)[0] is None

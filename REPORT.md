@@ -8,7 +8,7 @@ Học viên: Nguyễn Hồng Thái — 2A202602894
 python -m venv .venv && .venv/Scripts/pip install langchain langgraph langchain-openai langchain-google-genai langchain-anthropic langchain-ollama langchain-openrouter python-dotenv tabulate pytest
 python src/benchmark.py          # offline, deterministic
 python src/benchmark.py --live   # provider trong .env: LLM_PROVIDER, LLM_MODEL, <PROVIDER>_API_KEY, LLM_RPM (free tier)
-pytest src/test_agents.py -v     # 8 tests
+pytest src/test_agents.py -v     # 9 tests
 ```
 
 ## Thiết kế
@@ -54,7 +54,7 @@ Prompt tokens lấy từ `usage_metadata` của provider. Compactions đếm b�
 - Xu hướng giống bản offline: Standard thì Advanced tốn hơn (prompt +157%); Stress thì Advanced giảm 52% prompt tokens.
 - Câu trả lời của LLM dài hơn bản offline nên thread chạm ngưỡng 800 token ngay ở bộ Standard (40 lần compact). Phần token để sinh summary và gọi tool cũng làm agent tokens tăng mạnh (+223%).
 - Baseline có recall 0.11 vì câu trả lời tình cờ chứa cụm "ngắn gọn", không phải vì nhớ được.
-- Lỗi lộ ra khi chạy live: LLM gọi `save_user_fact` để ghi chủ đề tạm thời vào `interests` ("Energy policy", "so sánh CAPEX..."). Đây đúng là rủi ro "lưu sai fact": tool chỉ chặn key ngoài schema, chưa kiểm tra value. Cách sửa: cho ghi qua tool cũng phải đi qua confidence threshold, hoặc chỉ cho tool ghi các key đơn trị.
+- Lỗi lộ ra khi chạy live: LLM gọi `save_user_fact` để ghi chủ đề tin tức vào `interests` ("Energy policy", "so sánh CAPEX...") và chú thích tự bịa vào `pet` ("corgi tên Bơ (thường xuyên dùng làm ví dụ test case)"). Đã sửa bằng `validate_fact_write()` (xem mục Bonus). Bảng trên là số liệu chạy trước khi sửa; chưa chạy live lại được vì key free tier đã hết quota 500 request/ngày.
 
 ## Phân tích
 
@@ -69,8 +69,9 @@ Prompt tokens lấy từ `usage_metadata` của provider. Compactions đếm b�
 |---|---|---|---|
 | Confidence threshold | Mỗi fact có confidence; mệnh đề giả định (`nếu`) = 0.4, dưới ngưỡng 0.6 thì không ghi | Tránh lưu "Nếu sau này mình nhắc Đà Nẵng..." | Ngưỡng cứng có thể bỏ sót fact thật nói kiểu giả định |
 | Tránh lưu câu hỏi | Câu hỏi hoặc yêu cầu nhắc lại (`?`, `gì`, `nhớ lại xem`) bị bỏ qua khi trích fact | "đồ uống yêu thích là gì" không bị lưu thành fact | Câu khẳng định có chữ "gì" có thể bị bỏ qua |
+| Grounding guardrail cho tool ghi của LLM | `validate_fact_write()`: value phải xuất hiện nguyên văn trong lời người dùng ở thread hiện tại, và mệnh đề chứa nó phải vượt confidence threshold (loại câu hỏi, câu đùa, câu giả định, ngữ cảnh "tạm thời/hôm nay"); `interests` chỉ nhận từ danh sách kỹ thuật; value > 60 ký tự hoặc có chú thích bị từ chối | Chặn đúng các giá trị sai Gemini đã ghi khi chạy live (có test) | Chặn cả fact đúng khi LLM diễn đạt lại thay vì chép nguyên văn; chỉ đối chiếu với các message còn giữ sau compact |
 | Conflict handling | `upsert_fact` ghi đè; mệnh đề có `không còn`, `chỉ là`, `đùa`, `họp`, `lúc đầu` bị loại | Không giữ song song Huế/Đà Nẵng hay backend/MLOps; bỏ qua nhiễu Hà Nội, product manager | Danh sách cue viết tay, khó tổng quát sang cách diễn đạt khác |
 | Entity extraction | `response_style` tách slot `length/format/examples/emphasis`, merge theo slot; format mơ hồ không đè "3 bullet" | Giữ "3 bullet" dù về sau user chỉ nói "có cấu trúc" | Thêm logic merge phải test |
 | Memory decay | `interests` xếp theo lần nhắc gần nhất, giữ tối đa 6 | Chặn file phình theo thời gian | Sở thích cũ nhưng vẫn đúng có thể bị đẩy ra |
 
-Giới hạn: phần trích fact offline là regex với danh sách thành phố và nghề cố định, chỉ phù hợp phạm vi dataset. Ở chế độ live, LLM có thể ghi thêm fact qua tool `save_user_fact`; tool này chỉ nhận các key thuộc schema.
+Giới hạn: phần trích fact offline là regex với danh sách thành phố và nghề cố định, chỉ phù hợp phạm vi dataset. Ở chế độ live, LLM có thể ghi thêm fact qua tool `save_user_fact`, nhưng mọi lượt ghi đều phải qua `validate_fact_write()`.

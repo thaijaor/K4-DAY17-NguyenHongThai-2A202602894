@@ -309,6 +309,73 @@ def extract_profile_updates(message: str, min_confidence: float = 0.6) -> dict[s
 
 
 # ---------------------------------------------------------------------------
+# Guardrail for LLM-proposed writes (live tool `save_user_fact`)
+# ---------------------------------------------------------------------------
+
+TEMPORARY_CUES = ("tạm thời", "cho cuộc benchmark này", "hôm nay", "tuần này", "tối nay", "chiều nay", "sáng nay")
+MAX_FACT_CHARS = 60
+
+
+def grounding_confidence(value: str, user_messages: list[str]) -> float:
+    """Highest confidence of a user clause that literally contains `value`, 0 if none.
+
+    The same cues as the extractor apply: questions, negated/joke clauses, hypotheticals
+    and explicitly temporary context do not ground a long-term fact.
+    """
+
+    needle = value.strip().lower()
+    best = 0.0
+    for message in user_messages:
+        for sentence in _sentences(message):
+            low = sentence.lower()
+            if needle not in low or is_question(sentence) or any(c in low for c in TEMPORARY_CUES):
+                continue
+            for clause in _clauses(sentence) or [sentence]:
+                if needle in clause.lower():
+                    best = max(best, _clause_confidence(clause, sentence))
+    return best
+
+
+def validate_fact_write(
+    key: str, value: str, user_messages: list[str], min_confidence: float = 0.6
+) -> tuple[str | None, str]:
+    """Return (value to store, reason). The value is None when the write is rejected.
+
+    An LLM-proposed fact must be grounded in what the user actually said in this thread,
+    so the model cannot store its own paraphrases, news topics or temporary context.
+    """
+
+    value = " ".join(value.split())
+    if key not in FACT_LABELS:
+        return None, f"key '{key}' không nằm trong schema"
+    if not value or len(value) > MAX_FACT_CHARS or "(" in value:
+        return None, "value rỗng, quá dài hoặc có chú thích"
+
+    if key == "response_style":
+        said = ", ".join(parse_style(s) for m in user_messages for s in _sentences(m) if not is_question(s))
+        parts = [p for p in parse_style(value).split(", ") if p]
+        kept = [p for p in parts if p in said]
+        return (", ".join(kept), "ok") if kept else (None, "style không khớp lời người dùng")
+
+    if key == "interests":
+        items = [i.strip() for i in value.split(",") if i.strip()]
+        canonical = {t.lower(): t for t in TECH_INTERESTS}
+        kept = [
+            canonical[i.lower()]
+            for i in items
+            if i.lower() in canonical and grounding_confidence(i, user_messages) >= min_confidence
+        ]
+        rejected = [i for i in items if i.lower() not in {k.lower() for k in kept}]
+        if not kept:
+            return None, f"không có mối quan tâm kỹ thuật nào được người dùng nói rõ: {', '.join(rejected)}"
+        return ", ".join(kept), "ok" if not rejected else f"bỏ: {', '.join(rejected)}"
+
+    if grounding_confidence(value, user_messages) < min_confidence:
+        return None, "người dùng không nói fact này như một thông tin hiện tại"
+    return value, "ok"
+
+
+# ---------------------------------------------------------------------------
 # Compact memory
 # ---------------------------------------------------------------------------
 
