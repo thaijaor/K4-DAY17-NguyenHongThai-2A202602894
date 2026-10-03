@@ -106,8 +106,17 @@ class BaselineAgent:
             build_chat_model(self.config.model),
             tools=[],
             system_prompt=BASELINE_SYSTEM_PROMPT,
+            middleware=[live_retry_middleware()],
             checkpointer=InMemorySaver(),
         )
+
+
+def live_retry_middleware():
+    """Retry transient model errors (dropped connection, 429) instead of aborting a long benchmark."""
+
+    from langchain.agents.middleware import ModelRetryMiddleware
+
+    return ModelRetryMiddleware(max_retries=4, initial_delay=10.0, max_delay=60.0, on_failure="error")
 
 
 def _message_text(message: Any) -> str:

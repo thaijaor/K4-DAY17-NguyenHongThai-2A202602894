@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent_baseline import _message_text
+from agent_baseline import _message_text, live_retry_middleware
 from config import LabConfig, load_config
 from memory_store import FACT_LABELS, CompactMemoryManager, UserProfileStore, estimate_tokens, extract_profile_updates
 from model_provider import build_chat_model
@@ -158,6 +158,7 @@ class AdvancedAgent:
             model,
             tools=[read_user_memory, save_user_fact],
             middleware=[
+                live_retry_middleware(),
                 inject_profile,
                 SummarizationMiddleware(
                     model,

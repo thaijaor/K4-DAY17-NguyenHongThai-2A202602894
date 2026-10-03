@@ -7,7 +7,7 @@ Học viên: Nguyễn Hồng Thái — 2A202602894
 ```bash
 python -m venv .venv && .venv/Scripts/pip install langchain langgraph langchain-openai langchain-google-genai langchain-anthropic langchain-ollama langchain-openrouter python-dotenv tabulate pytest
 python src/benchmark.py          # offline, deterministic
-python src/benchmark.py --live   # dùng provider trong .env (LLM_PROVIDER, LLM_MODEL, <PROVIDER>_API_KEY)
+python src/benchmark.py --live   # provider trong .env: LLM_PROVIDER, LLM_MODEL, <PROVIDER>_API_KEY, LLM_RPM (free tier)
 pytest src/test_agents.py -v     # 8 tests
 ```
 
@@ -39,6 +39,22 @@ pytest src/test_agents.py -v     # 8 tests
 |---|---|---|---|---|---|---|
 | Baseline | 2588 | 22170 | 0.00 | 0.00 | 0 | 0 |
 | Advanced | 3089 | 11045 | 1.00 | 1.00 | 241 | 4 |
+
+## Kết quả (live, `gemini-3.5-flash-lite`, `LLM_RPM=12`)
+
+Prompt tokens lấy từ `usage_metadata` của provider. Compactions đếm bằng `CompactMemoryManager` chạy song song với `SummarizationMiddleware`.
+
+| Suite | Agent | Agent tokens only | Prompt tokens processed | Cross-session recall | Response quality (LLM judge) | Memory growth (bytes) | Compactions |
+|---|---|---|---|---|---|---|---|
+| Standard | Baseline | 6915 | 35067 | 0.11 | 0.23 | 0 | 0 |
+| Standard | Advanced | 22362 | 90191 | 0.96 | 0.68 | 398 | 40 |
+| Stress | Baseline | 4335 | 37609 | 0.00 | 0.00 | 0 | 0 |
+| Stress | Advanced | 6956 | 17999 | 1.00 | 0.93 | 336 | 17 |
+
+- Xu hướng giống bản offline: Standard thì Advanced tốn hơn (prompt +157%); Stress thì Advanced giảm 52% prompt tokens.
+- Câu trả lời của LLM dài hơn bản offline nên thread chạm ngưỡng 800 token ngay ở bộ Standard (40 lần compact). Phần token để sinh summary và gọi tool cũng làm agent tokens tăng mạnh (+223%).
+- Baseline có recall 0.11 vì câu trả lời tình cờ chứa cụm "ngắn gọn", không phải vì nhớ được.
+- Lỗi lộ ra khi chạy live: LLM gọi `save_user_fact` để ghi chủ đề tạm thời vào `interests` ("Energy policy", "so sánh CAPEX..."). Đây đúng là rủi ro "lưu sai fact": tool chỉ chặn key ngoài schema, chưa kiểm tra value. Cách sửa: cho ghi qua tool cũng phải đi qua confidence threshold, hoặc chỉ cho tool ghi các key đơn trị.
 
 ## Phân tích
 

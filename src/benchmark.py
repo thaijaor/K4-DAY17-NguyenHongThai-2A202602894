@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import shutil
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,7 @@ def run_agent_benchmark(agent_name: str, agent, conversations: list[dict[str, An
     quality_scores: list[float] = []
 
     for conv in conversations:
+        print(f"  [{agent_name}] {conv['id']}", file=sys.stderr, flush=True)
         thread_id = conv["id"]
         threads.append(thread_id)
         for turn in conv["turns"]:
