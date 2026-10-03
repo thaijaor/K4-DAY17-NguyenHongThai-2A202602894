@@ -24,10 +24,17 @@ def make_config(tmp_path: Path, threshold: int = 120, keep: int = 2):
     )
 
 
+def load_stress() -> dict:
+    return json.loads((ROOT / "data" / "advanced_long_context.json").read_text(encoding="utf-8"))[0]
+
+
 def test_user_markdown_read_write_edit(tmp_path: Path) -> None:
+    """User.md read/write/edit, plus what is allowed to be written into it."""
+
     store = UserProfileStore(tmp_path / "profiles")
     assert store.file_size("dungct") == 0
     assert "# User Profile" in store.read_text("dungct")  # default profile before any write
+    assert (tmp_path / "profiles") in store.path_for("../../etc/passwd").parents  # user id is sanitized
 
     path = store.write_text("dungct", "# User Profile\n\n## Facts\n- name: DũngCT\n- location: Đà Nẵng\n")
     assert path.name == "User.md" and path.exists()
@@ -38,32 +45,32 @@ def test_user_markdown_read_write_edit(tmp_path: Path) -> None:
     assert store.facts("dungct")["location"] == "Huế"
     assert store.file_size("dungct") == path.stat().st_size > 0
 
-
-def test_user_id_is_sanitized(tmp_path: Path) -> None:
-    store = UserProfileStore(tmp_path / "profiles")
-    path = store.path_for("../../etc/passwd")
-    assert (tmp_path / "profiles") in path.parents
-
-
-def test_correction_overwrites_old_fact(tmp_path: Path) -> None:
+    # Conflict handling: a correction overwrites the old fact instead of keeping both.
     agent = AdvancedAgent(make_config(tmp_path), force_offline=True)
     agent.reply("u1", "t1", "Mình ở Đà Nẵng và đang làm backend engineer cho startup AI.")
     agent.reply("u1", "t1", "Mình không còn làm backend engineer nữa, giờ chuyển sang MLOps engineer.")
     agent.reply("u1", "t1", "À, mình đính chính: giờ mình đang ở Huế chứ không còn ở Đà Nẵng mỗi ngày nữa.")
-
     profile = agent.profile_store.read_text("u1")
     assert "MLOps engineer" in profile and "backend engineer" not in profile
     assert "Huế" in profile and "Đà Nẵng" not in profile
 
-
-def test_noise_and_questions_are_not_stored() -> None:
+    # Noise, questions and hypotheticals are not stored.
     assert extract_profile_updates("Hà Nội chỉ là nơi mình vừa bay ra họp hai ngày với đối tác.") == {}
     assert extract_profile_updates("Có lúc mình đùa rằng hay là chuyển sang product manager cho đỡ mệt.") == {}
     assert extract_profile_updates("Bạn thử nhớ lại xem đồ uống yêu thích của mình là gì.") == {}
     assert extract_profile_updates("Nếu sau này mình nói ở Đà Nẵng thì đừng tin nhé.") == {}
-    # A vague format instruction must not erase a specific "3 bullet" preference.
-    style_only = extract_profile_updates("Mình muốn trả lời ngắn gọn thành 3 bullet.")
-    assert style_only["response_style"] == "ngắn gọn, 3 bullet"
+
+    # LLM tool writes must be grounded in what the user said (values Gemini wrote in a live run).
+    said = load_stress()["turns"][:10]
+    assert validate_fact_write("interests", "Python, Energy policy, so sánh CAPEX mở rộng", said)[0] == "Python"
+    assert validate_fact_write("location", "Hà Nội", said)[0] is None
+    assert validate_fact_write("profession", "product manager", said)[0] is None
+    assert validate_fact_write("location", "Đà Nẵng", said)[0] == "Đà Nẵng"
+    assert validate_fact_write("response_style", "ngắn gọn, 3 bullet", said)[0] == "ngắn gọn, 3 bullet"
+    pet_turns = ["Mình nuôi một bé corgi tên Bơ."]
+    assert validate_fact_write("pet", "corgi tên Bơ (thường dùng làm ví dụ test case)", pet_turns)[0] is None
+    assert validate_fact_write("pet", "corgi tên Bơ", pet_turns)[0] == "corgi tên Bơ"
+    assert validate_fact_write("salary", "1000", pet_turns)[0] is None
 
 
 def test_compact_trigger(tmp_path: Path) -> None:
@@ -76,7 +83,7 @@ def test_compact_trigger(tmp_path: Path) -> None:
     assert "Tin số 0" in state["summary"]  # old content survives as summary, not verbatim
 
     agent = AdvancedAgent(make_config(tmp_path), force_offline=True)
-    stress = json.loads((ROOT / "data" / "advanced_long_context.json").read_text(encoding="utf-8"))[0]
+    stress = load_stress()
     for turn in stress["turns"]:
         agent.reply(stress["user_id"], "stress", turn)
     assert agent.compaction_count("stress") >= 2
@@ -112,7 +119,7 @@ def test_compact_reduces_prompt_load_on_long_thread(tmp_path: Path) -> None:
     config = make_config(tmp_path, threshold=800, keep=4)
     baseline = BaselineAgent(config, force_offline=True)
     advanced = AdvancedAgent(config, force_offline=True)
-    stress = json.loads((ROOT / "data" / "advanced_long_context.json").read_text(encoding="utf-8"))[0]
+    stress = load_stress()
 
     for turn in stress["turns"]:
         baseline.reply(stress["user_id"], "long", turn)
@@ -125,39 +132,9 @@ def test_compact_reduces_prompt_load_on_long_thread(tmp_path: Path) -> None:
     last_advanced = advanced.reply(stress["user_id"], "long", "Tóm tắt về mình?")["prompt_tokens"]
     assert last_advanced < last_baseline / 2
 
-
-def test_short_thread_advanced_costs_more(tmp_path: Path) -> None:
-    """Without compaction, User.md is pure overhead: advanced carries more prompt per turn."""
-
-    config = make_config(tmp_path, threshold=800, keep=4)
-    baseline = BaselineAgent(config, force_offline=True)
-    advanced = AdvancedAgent(config, force_offline=True)
+    # Counter-case: on a short thread nothing is compacted and User.md is pure overhead.
     for turn in ["Mình tên là DũngCT.", "Mình thích Python.", "Hôm nay trời đẹp."]:
         baseline.reply("u", "short", turn)
         advanced.reply("u", "short", turn)
     assert advanced.compaction_count("short") == 0
     assert advanced.prompt_token_usage("short") > baseline.prompt_token_usage("short")
-
-
-def test_llm_tool_writes_must_be_grounded() -> None:
-    """Values Gemini wrote via `save_user_fact` in the live run must now be rejected."""
-
-    stress = json.loads((ROOT / "data" / "advanced_long_context.json").read_text(encoding="utf-8"))[0]["turns"]
-    said = stress[:10]
-
-    # News topic / model paraphrase -> not something the user said about themselves.
-    value, _ = validate_fact_write("interests", "Python, Energy policy, so sánh CAPEX mở rộng", said)
-    assert value == "Python"
-    assert validate_fact_write("interests", "Energy policy", said)[0] is None
-    # Noise: Hà Nội is a meeting trip, product manager is a joke.
-    assert validate_fact_write("location", "Hà Nội", said)[0] is None
-    assert validate_fact_write("profession", "product manager", said)[0] is None
-    # Grounded current facts pass.
-    assert validate_fact_write("location", "Đà Nẵng", said)[0] == "Đà Nẵng"
-    assert validate_fact_write("profession", "MLOps engineer", said)[0] == "MLOps engineer"
-    assert validate_fact_write("response_style", "ngắn gọn, 3 bullet", said)[0] == "ngắn gọn, 3 bullet"
-    # Annotated values and keys outside the schema.
-    pet_turns = ["Mình nuôi một bé corgi tên Bơ."]
-    assert validate_fact_write("pet", "corgi tên Bơ (thường dùng làm ví dụ test case)", pet_turns)[0] is None
-    assert validate_fact_write("pet", "corgi tên Bơ", pet_turns)[0] == "corgi tên Bơ"
-    assert validate_fact_write("salary", "1000", pet_turns)[0] is None
